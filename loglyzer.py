@@ -1,262 +1,201 @@
-# loglyzer.py
-
-import pandas as pd
-from sklearn.ensemble import IsolationForest
-import numpy as np
-import argparse
+import re
 import sys
-from tqdm import tqdm
-import requests
-import matplotlib.pyplot as plt  # <-- NEW IMPORT
-import seaborn as sns  # <-- NEW IMPORT
-import os  # <-- NEW IMPORT
+import collections
+import html
+import geoip2.database
+import geoip2.errors
+from datetime import datetime
+
+# Configuration
+ANOMALY_THRESHOLD = 5
+REPORT_FILE = "LogLyzer_Report.html"
+GEOIP_DB_PATH = "GeoLite2-City.mmdb"  # Path to your local database file
 
 
 class LogLyzer:
-    """
-    A lightweight log analysis and anomaly detection tool.
-    Phase 4: Incorporate Visualization and HTML Report generation.
-    """
+    """Analyzes web server logs for potential security anomalies and generates an HTML report."""
 
-    def __init__(self, log_path, log_format='apache_common', contamination=0.05):
-        self.log_path = log_path
-        self.log_format = log_format
-        self.contamination = contamination
-        self.df = None
-        self.anomalies = pd.DataFrame()
-        print(f"[*] LogLyzer initialized for log file: {self.log_path}")
+    def __init__(self, log_file):
+        """Initializes the LogLyzer with the log file path and GeoIP database."""
+        self.log_file = log_file
+        self.ip_counts = collections.defaultdict(int)
+        self.anomalous_ips = {}
+        self.geoip_db = GEOIP_DB_PATH
+        self.log_pattern = re.compile(
+            r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) - - \[(.*?)\] "(.*?)" (\d+) (\d+)'
+        )
+
+        try:
+            # Check if the GeoIP database file exists
+            with open(self.geoip_db, 'rb'):
+                print(f"[*] Local GeoIP database found: {self.geoip_db}")
+        except FileNotFoundError:
+            print(f"[!] GeoIP database not found at {self.geoip_db}. Geo-enrichment disabled.")
+            self.geoip_db = None
+
+    def _parse_log(self, line):
+        """Extracts IP, timestamp, request, and status code from a log line."""
+        match = self.log_pattern.match(line)
+        if match:
+            ip, timestamp_str, request, status_code, _ = match.groups()
+            # Attempt to normalize/simplify the request string
+            request_type, path = self._extract_request_details(request)
+            timestamp = self._parse_timestamp(timestamp_str)
+            return ip, timestamp, request_type, path, status_code
+        return None, None, None, None, None
+
+    def _extract_request_details(self, request_line):
+        """Extracts the method and path from the request string."""
+        try:
+            parts = request_line.split()
+            if len(parts) >= 2:
+                return parts[0], parts[1]
+        except Exception:
+            pass
+        return 'N/A', 'N/A'
+
+    def _parse_timestamp(self, timestamp_str):
+        """Converts the log timestamp string into a datetime object."""
+        # Example format: 10/Oct/2025:13:55:34 +0200
+        try:
+            return datetime.strptime(timestamp_str.split(' ')[0], '%d/%b/%Y:%H:%M:%S')
+        except ValueError:
+            return None
 
     def _enrich_with_geoip(self, ip_address):
-        """Looks up the city and country for a given IP using a public API."""
+        """Looks up the city and country for a given IP using the local GeoLite2 DB."""
 
-        # Skip local/private IPs
+        # 1. Skip if no IP address was provided by the parser (Robustness Fix)
+        if not ip_address:
+            return "Invalid/Corrupt IP"
+
+        # 2. Skip local/private IPs (must be public IP for GeoIP lookup)
         if ip_address.startswith(('192.168.', '10.', '172.16.', '127.', '0.')):
             return "Local/Private IP"
 
+        if not self.geoip_db:
+            return "GeoIP Disabled"
+
+        # Use the local database reader
         try:
-            # Using the free public API from ip-api.com
-            url = f"http://ip-api.com/json/{ip_address}?fields=country,city"
-            response = requests.get(url, timeout=5)
+            with geoip2.database.Reader(self.geoip_db) as reader:
+                response = reader.city(ip_address)
+                city = response.city.name if response.city.name else 'N/A'
+                country = response.country.name if response.country.name else 'N/A'
+                return f"{city}, {country}"
+        except geoip2.errors.AddressNotFound:
+            return "IP Not Found"
+        except ValueError:
+            # Catches the specific 'ValueError: does not appear to be an IPv4 or IPv6 address'
+            return "GeoIP Error: Invalid Format"
+        except Exception:
+            # Catches other reader errors
+            return "GeoIP Error"
 
-            if response.status_code == 200:
-                data = response.json()
-                if data and data.get('status') == 'success':
-                    country = data.get('country', 'N/A')
-                    city = data.get('city', 'N/A')
-                    return f"{city}, {country}"
-                elif data.get('message') == 'reserved range':
-                    return "Local/Private IP"
-                else:
-                    return "API Error"
-            else:
-                return f"HTTP Error {response.status_code}"
-        except requests.exceptions.RequestException as e:
-            return f"Network Error: {e}"
+    def analyze(self):
+        """Reads the log file, counts IP occurrences, and identifies anomalies."""
+        print(f"[*] Starting analysis of {self.log_file}...")
 
-    def _parse_log(self):
-        # ... (Parsing method remains unchanged) ...
-        print("[*] Starting log parsing...")
-        data = []
-        try:
-            with open(self.log_path, 'r', encoding='utf-8') as f:
-                total_lines = sum(1 for line in open(self.log_path, 'r', encoding='utf-8'))
+        with open(self.log_file, 'r') as f:
+            for line in f:
+                ip, _, _, _, status_code = self._parse_log(line)
 
-                for line in tqdm(f, total=total_lines, desc="Parsing"):
-                    line = line.strip()
-                    if not line:
-                        continue
+                if ip:
+                    self.ip_counts[ip] += 1
 
-                    parts = line.split(' ')
+                    # Anomaly condition: High volume of failed logins (401 status)
+                    if status_code == '401' and self.ip_counts[ip] >= ANOMALY_THRESHOLD:
+                        if ip not in self.anomalous_ips:
+                            self.anomalous_ips[ip] = {'requests': 0, 'status_codes': collections.defaultdict(int)}
 
-                    if len(parts) < 10:
-                        continue
+                        self.anomalous_ips[ip]['requests'] += 1
+                        self.anomalous_ips[ip]['status_codes'][status_code] += 1
 
-                    try:
-                        ip = parts[0]
-                        timestamp = parts[3].strip('[')
-                        request = parts[6]
-                        status = int(parts[8])
-                        size = parts[9]
+        print(f"[*] Analysis complete. Found {len(self.anomalous_ips)} potential anomalies.")
 
-                        data.append({
-                            'ip': ip,
-                            'timestamp': timestamp,
-                            'request': request,
-                            'status': status,
-                            'size': size
-                        })
-                    except Exception:
-                        continue
+        if self.anomalous_ips and self.geoip_db:
+            print("[*] Performing Geo-enrichment of anomalous IPs via local GeoLite2 DB...")
+            for ip in self.anomalous_ips:
+                location = self._enrich_with_geoip(ip)
+                self.anomalous_ips[ip]['location'] = location
+                print(f"    - IP: {ip} | Location: {location}")
 
-            self.df = pd.DataFrame(data)
-            print(f"[+] Parsing complete. Loaded {len(self.df)} log entries.")
+    def generate_report(self):
+        """Generates an HTML report of the findings."""
+        if not self.anomalous_ips:
+            print("[*] No anomalies found. Skipping report generation.")
+            return
 
-        except FileNotFoundError:
-            print(f"[!] Error: Log file not found at {self.log_path}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"[!] An unexpected error occurred during parsing: {e}")
-            sys.exit(1)
-
-    def _detect_anomalies(self):
-        """
-        Applies the Isolation Forest algorithm to detect anomalies.
-        """
-        print("[*] Training Isolation Forest model for anomaly detection...")
-
-        features = self.df[['status', 'request_count']].values
-
-        model = IsolationForest(
-            contamination=self.contamination,
-            random_state=42,
-            n_estimators=100
-        )
-
-        self.df['anomaly_score'] = model.fit_predict(features)
-
-        self.anomalies = self.df[self.df['anomaly_score'] == -1].copy()
-
-        print(f"[+] Anomaly detection complete. Found {len(self.anomalies)} potential anomalies.")
-
-        if not self.anomalies.empty:
-
-            # GEO-ENRICHMENT OF ANOMALIES
-            print("[*] Performing Geo-enrichment of anomalous IPs via API...")
-            anomalous_ips = self.anomalies['ip'].unique()
-            ip_to_geo = {ip: self._enrich_with_geoip(ip) for ip in tqdm(anomalous_ips, desc="Geo-lookup")}
-            self.anomalies['location'] = self.anomalies['ip'].map(ip_to_geo)
-
-            print("\n--- Potential Anomalies Detected (LogLyzer Alert) ---")
-            display_cols = ['timestamp', 'ip', 'location', 'request', 'status', 'request_count']
-            print(self.anomalies[display_cols].to_string())
-            print("------------------------------------------------------\n")
-        else:
-            print("[+] No significant anomalies detected based on the current model settings.")
-
-    # --- NEW REPORT GENERATION METHOD ---
-
-    def _generate_report(self):
-        """
-        Generates an HTML report containing key metrics, charts, and anomaly details.
-        """
-        print("[*] Generating report and visualization...")
-        report_file = 'LogLyzer_Report.html'
-
-        # 1. Generate Status Code Distribution Chart
-        plt.style.use('seaborn-v0_8-darkgrid')
-
-        plt.figure(figsize=(10, 5))
-        sns.countplot(x='status', data=self.df, palette='viridis')
-        plt.title('HTTP Status Code Distribution', fontsize=16)
-        plt.xlabel('Status Code')
-        plt.ylabel('Count')
-
-        # Save the plot as a PNG image
-        chart_path = 'status_code_distribution.png'
-        plt.savefig(chart_path)
-        plt.close()
-
-        # 2. Convert Anomalies DataFrame to an HTML Table
-        if not self.anomalies.empty:
-            anomaly_table = self.anomalies[[
-                'timestamp', 'ip', 'location', 'request', 'status', 'request_count'
-            ]].to_html(
-                index=False,
-                classes='table table-striped',
-                border=0
-            )
-        else:
-            anomaly_table = "<p>No anomalies were detected during this analysis run.</p>"
-
-        # 3. Assemble the Final HTML Content (using Bootstrap for clean styling)
-        total_logs = len(self.df)
-        total_anomalies = len(self.anomalies)
+        print(f"[*] Generating report: {REPORT_FILE}")
 
         html_content = f"""
-        <!DOCTYPE html>
         <html>
         <head>
-            <title>LogLyzer Analysis Report</title>
-            <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+            <title>LogLyzer Security Report</title>
             <style>
-                body {{ font-family: Arial, sans-serif; padding: 20px; }}
-                h1 {{ color: #007bff; }}
-                .alert-danger {{ color: #721c24; background-color: #f8d7da; border-color: #f5c6cb; }}
-                table {{ width: 100%; margin-top: 20px; }}
+                body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f9; }}
+                h1 {{ color: #333; }}
+                h2 {{ color: #cc0000; border-bottom: 2px solid #cc0000; padding-bottom: 5px; }}
+                .anomaly-card {{ background-color: #fff; border: 1px solid #ddd; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                .ip-detail {{ font-weight: bold; color: #333; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                th {{ background-color: #f0f0f0; }}
             </style>
         </head>
         <body>
-            <div class="container">
-                <h1 class="text-center">LogLyzer Security Analysis Report</h1>
-                <p class="text-center text-muted">Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <h1>LogLyzer Security Anomaly Report</h1>
+            <p>Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>Analysis ran on log file: <strong>{html.escape(self.log_file)}</strong></p>
+            <p>Total Anomalies Found: <strong style="color: #cc0000;">{len(self.anomalous_ips)}</strong> (Threshold: {ANOMALY_THRESHOLD} failed requests)</p>
 
-                <div class="row mt-4">
-                    <div class="col-md-6">
-                        <div class="card p-3">
-                            <h4>Summary Statistics</h4>
-                            <p><strong>Total Log Entries Processed:</strong> {total_logs}</p>
-                            <p class="alert alert-danger"><strong>Potential Anomalies Detected:</strong> {total_anomalies}</p>
-                        </div>
-                    </div>
-                </div>
-
-                <h2 class="mt-5">Status Code Distribution</h2>
-                <img src="{chart_path}" alt="Status Code Chart" class="img-fluid border p-2">
-
-                <h2 class="mt-5">Anomaly Details (Geo-Enriched)</h2>
-                {anomaly_table}
-
-                <p class="text-center text-muted mt-5">--- End of Report ---</p>
-            </div>
-        </body>
-        </html>
+            <h2>Detected Anomalies</h2>
         """
 
-        with open(report_file, 'w') as f:
+        for ip, data in self.anomalous_ips.items():
+            location = data.get('location', 'N/A (GeoIP not performed/disabled)')
+
+            html_content += f"""
+            <div class="anomaly-card">
+                <h3>Suspicious IP Address: <span class="ip-detail">{html.escape(ip)}</span></h3>
+                <p><strong>Geo Location:</strong> {html.escape(location)}</p>
+                <p><strong>Total Anomalous Requests:</strong> {data['requests']}</p>
+
+                <h4>Status Code Breakdown:</h4>
+                <table>
+                    <tr><th>Status Code</th><th>Count</th></tr>
+            """
+            for status, count in data['status_codes'].items():
+                html_content += f"<tr><td>{html.escape(status)}</td><td>{count}</td></tr>"
+
+            html_content += "</table></div>"
+
+        html_content += "</body></html>"
+
+        with open(REPORT_FILE, 'w') as f:
             f.write(html_content)
 
-        print(f"[+] Report generated successfully: {report_file}")
-
-    def analyze(self):
-        """
-        Main function to run the analysis pipeline and generate report.
-        """
-        self._parse_log()
-
-        if self.df is not None and not self.df.empty:
-            print("[*] Data cleaning and feature engineering phase...")
-
-            self.df['status'] = pd.to_numeric(self.df['status'], errors='coerce')
-            self.df.dropna(subset=['status'], inplace=True)
-
-            # Feature: Count of requests per IP
-            ip_counts = self.df['ip'].value_counts().reset_index()
-            ip_counts.columns = ['ip', 'request_count']
-            self.df = pd.merge(self.df, ip_counts, on='ip', how='left')
-
-            print("[*] Feature engineering complete.")
-
-            # --- Call the detection method (includes enrichment) ---
-            self._detect_anomalies()
-
-            # --- Call the report method ---
-            self._generate_report()
-
-            print("[+] LogLyzer analysis pipeline finished.")
-        else:
-            print("[!] No data to analyze.")
+        print(f"[*] Report successfully written to {REPORT_FILE}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LogLyzer: A Python-based Log Anomaly Detector.")
-    parser.add_argument('log_file', type=str, help="Path to the log file for analysis.")
-    parser.add_argument('-c', '--contamination', type=float, default=0.05,
-                        help="Estimated proportion of outliers in the data (e.g., 0.01 for 1%). Default is 0.05.")
+    if len(sys.argv) != 2:
+        print("Usage: python loglyzer.py <log_file_path>")
+        sys.exit(1)
 
-    args = parser.parse_args()
+    log_file = sys.argv[1]
 
-    analyzer = LogLyzer(args.log_file, contamination=args.contamination)
+    # Check if the log file exists before proceeding
+    try:
+        with open(log_file, 'r'):
+            pass
+    except FileNotFoundError:
+        print(f"[ERROR] Log file not found: {log_file}")
+        sys.exit(1)
+
+    analyzer = LogLyzer(log_file)
     analyzer.analyze()
+    analyzer.generate_report()
 
 
 if __name__ == "__main__":
