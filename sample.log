@@ -1,0 +1,5 @@
+# ... (Normal activity)
+# Brute-force/Suspicious Probing Anomaly (using public IP 8.8.8.8)
+8.8.8.8 - - [10/Oct/2025:13:55:34 +0200] "POST /login.php HTTP/1.1" 401 500
+8.8.8.8 - - [10/Oct/2025:13:55:34 +0200] "POST /login.php HTTP/1.1" 401 500
+# ... (rest of the 8.8.8.8 entries)
