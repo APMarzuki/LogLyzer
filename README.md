@@ -1,27 +1,23 @@
-# 🔎 LogLyzer Web Security Dashboard
+## 🤖 Project Overview
 
-## Project Overview
+LogLyzer is a Python-based Security Information and Event Management (SIEM) tool focused on identifying suspicious or anomalous behavior within web server logs. It employs a **request-counting model** to detect brute-force activity and integrates offline GeoIP enrichment to provide context to security alerts.
 
-LogLyzer is a comprehensive Python-based **Web Log Security Analyzer** designed to process standard web server access logs. It automatically identifies suspicious or anomalous behavior and presents the findings through an interactive **Streamlit web dashboard**.
+## ✨ Key Features
 
-### ✨ Key Features
-
-* **Security Analysis (401 Detection):** Automatically flags and aggregates requests resulting in `401 Unauthorized` responses to identify potential brute-force or credential-stuffing attacks.
-* **GeoIP Enrichment:** Utilizes the `geoip2` library to accurately map malicious and high-volume IP addresses to their precise geographic locations.
-* **Interactive Streamlit Dashboard:** Provides a user-friendly interface for uploading logs, viewing security metrics, and visualizing data using dynamic charts powered by Plotly.
-* **Dynamic Filtering:** Allows users to filter all displayed results (including charts) by **IP Address** and **HTTP Status Code** via a sidebar.
+* **Log Ingestion:** Parses standard web server log formats (e.g., Apache Common Log Format).
+* **Anomaly Detection:** Flags suspicious activity (e.g., repeated `401 Unauthorized` responses) based on a simple, effective request count threshold.
+* **Geo-Enrichment:** **Integrates GeoIP database enrichment (GeoLite2)** to map anomalous IP addresses to a physical location using a local, offline database.
+* **Reporting:** Generates a clean, professional **HTML report** (`LogLyzer_Report.html`) summarizing findings and providing Geo-enriched anomaly details.
 
 ---
 
-## 🚀 Getting Started (Run the Dashboard)
+## ⚙️ Prerequisites & Setup
 
-This project requires Python 3.9+ and assumes you are running the Streamlit app from the `LogLyzer_GUI` directory.
+To run LogLyzer, you need the Python `geoip2` library and the GeoLite2 database file.
 
-### 1. Setup Environment
+### 1. Install Dependencies
 
-First, navigate to the project directory and activate your virtual environment:
+Ensure you are in your project's virtual environment and install the required Python library:
 
 ```bash
-# Example for Windows. Use 'source .venv/bin/activate' on Linux/macOS
-cd LogLyzer_GUI
-source .venv/Scripts/activate
+pip install geoip2
