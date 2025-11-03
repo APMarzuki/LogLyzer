@@ -21,12 +21,13 @@ class LogLyzer:
     A class to parse, analyze, and report on log files.
     """
 
-    def __init__(self, log_data):
+    def __init__(self, log_data, unauthorized_threshold=5): # V1.0.1 CHANGE 1: Accept threshold
         """Initializes with log data (content as a list of strings) and GeoIP Reader."""
         self.log_data = log_data
         self.parsed_logs = []
         self.suspicious_ips = Counter()
         self.total_logs = 0
+        self.unauthorized_threshold = unauthorized_threshold # V1.0.1 CHANGE 2: Store threshold
 
         # Initialize the database reader once in the constructor
         self.geoip_reader = None
@@ -49,14 +50,31 @@ class LogLyzer:
         match = LOG_PATTERN.match(line)
         if match:
             ip, timestamp_str, request, status, size = match.groups()
+
+            # V1.0.3 FIX 1: Get the parsed timestamp separately
+            parsed_time = self._parse_timestamp(timestamp_str)
+
+            # V1.0.3 FIX 2: If timestamp parsing failed, return None immediately.
+            if parsed_time is None:
+                return None
+
             return {
                 'ip_address': ip,
-                'timestamp': self._parse_timestamp(timestamp_str),
+                'timestamp': parsed_time,  # Use the parsed time here
                 'request': request,
                 'status_code': int(status) if status.isdigit() else None,
                 'size': int(size) if size.isdigit() and size != '-' else 0
             }
         return None
+
+    def _parse_timestamp(self, timestamp_str):
+        """Parses the log timestamp string into a datetime object."""
+        try:
+            # Example format: '24/Oct/2025:12:00:00 +0200'
+            return datetime.strptime(timestamp_str.split(' ')[0], '%d/%b/%Y:%H:%M:%S')
+        except ValueError:
+            # V1.0.3 FIX 3: Return None on failure to avoid crashing analysis
+            return None
 
     def _parse_timestamp(self, timestamp_str):
         """Parses the log timestamp string into a datetime object."""
@@ -125,8 +143,10 @@ class LogLyzer:
             self.suspicious_ips.most_common(),
             columns=['IP Address', '401 Count']
         )
-        # Apply a simple threshold for demonstration
-        suspicious_df = suspicious_df[suspicious_df['401 Count'] > 0]
+        # V1.0.1 CHANGE 3: Apply the configurable threshold to the base results
+        suspicious_df = suspicious_df[
+            suspicious_df['401 Count'] >= self.unauthorized_threshold
+        ]
 
         # Output 2: Status Code Distribution
         # Note: We reset the index to make the columns 'Status Code' and 'Count' explicit
@@ -135,12 +155,26 @@ class LogLyzer:
 
         # Output 3: Geographic Distribution
         geo_counts = self.df['country'].value_counts().reset_index()
+        # ... (Output 3: Geographic Distribution code remains here) ...
         geo_counts.columns = ['Country', 'Requests']
 
-        # Return a dictionary of all results
+        # V1.0.2 ADDITION: Time-Series Analysis
+        # Ensure 'timestamp' is a datetime object and set it as the index
+        if not self.df.empty:
+            df_time = self.df.set_index('timestamp')
+
+            # Resample the data to count requests per hour ('H')
+            hourly_requests = df_time.resample('H').size().reset_index(name='Requests')
+            hourly_requests.columns = ['Time', 'Requests']
+        else:
+            # If the DataFrame is empty (e.g., no logs parsed), return an empty DataFrame
+            hourly_requests = pd.DataFrame(columns=['Time', 'Requests'])
+
+        # --- V1.0.3 FIX: Move the return statement OUTSIDE the if/else block ---
         return {
             'total_logs': self.total_logs,
             'suspicious_ips': suspicious_df,
             'status_distribution': status_counts,
-            'geo_distribution': geo_counts
+            'geo_distribution': geo_counts,
+            'hourly_requests': hourly_requests  # <-- NEW
         }
