@@ -164,7 +164,7 @@ class LogLyzer:
             df_time = self.df.set_index('timestamp')
 
             # Resample the data to count requests per hour ('H')
-            hourly_requests = df_time.resample('H').size().reset_index(name='Requests')
+            hourly_requests = df_time.resample('h').size().reset_index(name='Requests')
             hourly_requests.columns = ['Time', 'Requests']
         else:
             # If the DataFrame is empty (e.g., no logs parsed), return an empty DataFrame

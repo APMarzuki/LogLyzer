@@ -109,7 +109,7 @@ if uploaded_file is not None:
         st.subheader(f"IP Addresses Exceeding {unauthorized_threshold} Unauthorized Attempts")
 
         if not filtered_suspicious_df.empty:
-            st.dataframe(filtered_suspicious_df, hide_index=True, width='stretch')
+            st.dataframe(filtered_suspicious_df, hide_index=True, use_container_width=True)
 
             fig_suspicious = px.bar(
                 filtered_suspicious_df,
@@ -117,7 +117,7 @@ if uploaded_file is not None:
                 y="401 Count",
                 title="401 Error Count per IP",
             )
-            st.plotly_chart(fig_suspicious, width='stretch')
+            st.plotly_chart(fig_suspicious, use_container_width=True)
         else:
             st.info("No suspicious (401) activity found based on the current filters.")
 
@@ -125,7 +125,7 @@ if uploaded_file is not None:
     with tab_status:
         st.subheader("HTTP Status Code Distribution (Overall)")
         # Note: We use the *original* results for the distribution chart as it's a general metric
-        st.dataframe(results['status_distribution'], hide_index=True, width='stretch')
+        st.dataframe(results['status_distribution'], hide_index=True, use_container_width=True)
 
         fig_status = px.bar(
             results['status_distribution'],
@@ -133,14 +133,14 @@ if uploaded_file is not None:
             y="Count",
             title="Distribution of all HTTP Status Codes",
         )
-        st.plotly_chart(fig_status, width='stretch')
+        st.plotly_chart(fig_status, use_container_width=True)
 
     # --- Tab 3: Geographic Activity ---
     with tab_geo:
         st.subheader("Geographic Distribution of Requests (Filtered)")
 
         if not filtered_geo_counts.empty:
-            st.dataframe(filtered_geo_counts, hide_index=True, width='stretch')
+            st.dataframe(filtered_geo_counts, hide_index=True, use_container_width=True)
 
             st.subheader("Requests by Country")
             fig_geo = px.pie(
@@ -149,7 +149,7 @@ if uploaded_file is not None:
                 names="Country",
                 title="Geographic Request Distribution (Filtered)",
             )
-            st.plotly_chart(fig_geo, width='stretch')
+            st.plotly_chart(fig_geo, use_container_width=True)
         else:
             st.info("No geographic data found based on the current filters.")
 
@@ -165,7 +165,7 @@ if uploaded_file is not None:
                 title="Total Requests per Hour",
             )
             fig_time.update_xaxes(type='category')
-            st.plotly_chart(fig_time, width='stretch')
+            st.plotly_chart(fig_time, use_container_width=True)
         else:
             st.info("Insufficient data to show hourly request volume.")
 
